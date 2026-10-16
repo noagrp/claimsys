@@ -18,7 +18,7 @@ Live static frontend: `index.html` — host using GitHub Pages (or Firebase Host
 1. In Firebase Console for `claimsys-ada3b`, enable Authentication Email/Password and/or Google.
 2. Add the deployed site hostname to **Authentication > Settings > Authorized domains**.
 3. Create a Cloud Firestore database.
-4. Publish `firestore.rules` from this repository as Firestore Rules, **before allowing real users**. Merely committing rules to GitHub does not deploy them.
+4. Configure and publish Firestore Security Rules directly in Firebase Console before allowing real users. Do not store rules in the GitHub repository.
 5. Sign in once with the intended Superadmin account, creating `users/{uid}` with role `staff`.
 6. Using trusted Firebase Console administrator access, set **only that user's** Firestore `users/{uid}.role` to `superadmin`. Do not offer public UI-based self-promotion.
 7. Sign out and back in; open the Managers section to promote registered manager accounts by their Firebase UIDs.
