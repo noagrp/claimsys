@@ -1,0 +1,98 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function me() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function isSuper() { return signedIn() && exists(me()) && get(me()).data.role == 'superadmin'; }
+    function isManager() { return signedIn() && exists(me()) && get(me()).data.role == 'manager'; }
+    function companyPath(c) { return /databases/$(database)/documents/companies/$(c); }
+    function companyExists(c) { return exists(companyPath(c)); }
+    function owns(c) { return signedIn() && companyExists(c) && get(companyPath(c)).data.managerId == request.auth.uid && isManager(); }
+    function manages(c) { return isSuper() || owns(c); }
+    function accessPath(c) { return /databases/$(database)/documents/companyAccess/$(c + '_' + request.auth.uid); }
+    function canAccess(c) { return manages(c) || (signedIn() && exists(accessPath(c)) && get(accessPath(c)).data.userId == request.auth.uid && get(accessPath(c)).data.companyId == c); }
+    function validClaim(d) {
+      return d.billDate is string && d.billDate.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && d.description is string && d.description.size() > 0 && d.description.size() <= 1000
+        && d.vendor is string && d.vendor.size() > 0 && d.vendor.size() <= 150
+        && d.accountId is string && d.accountId.size() > 0
+        && d.accountCode is string && d.accountName is string
+        && d.amountCents is int && d.amountCents >= 0 && d.amountCents <= 100000000000
+        && d.status in ['Unchecked','Checked','Correction Required','Void'];
+    }
+    match /users/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isSuper() || isManager());
+      allow list: if isSuper();
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['email','role','createdAt'])
+        && request.resource.data.role == 'staff'
+        && request.resource.data.email == request.auth.token.email;
+      allow update: if isSuper() && request.resource.data.role in ['staff','manager','superadmin']
+        && (resource.data.role != 'superadmin' || request.resource.data.role == 'superadmin');
+      allow delete: if false;
+    }
+    match /companies/{companyId} {
+      allow get, list: if canAccess(companyId);
+      allow create: if (isManager() || isSuper())
+        && request.resource.data.managerId == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0;
+      allow update: if manages(companyId) && request.resource.data.managerId == resource.data.managerId;
+      allow delete: if false;
+      match /accounts/{accountId} {
+        allow read: if canAccess(companyId);
+        allow create: if manages(companyId)
+          && request.resource.data.code is string
+          && request.resource.data.name is string
+          && request.resource.data.active is bool;
+        allow update: if manages(companyId);
+        allow delete: if false;
+      }
+      match /months/{monthId}/claims/{claimId} {
+        allow read: if canAccess(companyId);
+        allow create: if canAccess(companyId)
+          && validClaim(request.resource.data)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.status == 'Unchecked'
+          && request.resource.data.billDate.matches('^' + monthId + '-\\d{2}$')
+          && exists(/databases/$(database)/documents/companies/$(companyId)/accounts/$(request.resource.data.accountId))
+          && get(/databases/$(database)/documents/companies/$(companyId)/accounts/$(request.resource.data.accountId)).data.active == true
+          && request.resource.data.accountCode == get(/databases/$(database)/documents/companies/$(companyId)/accounts/$(request.resource.data.accountId)).data.code
+          && request.resource.data.accountName == get(/databases/$(database)/documents/companies/$(companyId)/accounts/$(request.resource.data.accountId)).data.name;
+        allow update: if validClaim(request.resource.data)
+          && request.resource.data.billDate.matches('^' + monthId + '-\\d{2}$')
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt
+          && (
+            manages(companyId)
+            || (canAccess(companyId) && resource.data.createdBy == request.auth.uid
+              && resource.data.status == 'Unchecked'
+              && request.resource.data.status == 'Unchecked'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'billDate','description','vendor','accountId','accountCode','accountName','amountCents','updatedAt'
+              ]))
+          );
+        allow delete: if false;
+        match /audit/{auditId} {
+          allow read: if canAccess(companyId);
+          allow create: if manages(companyId) && request.resource.data.by == request.auth.uid;
+          allow update, delete: if false;
+        }
+      }
+    }
+    match /companyAccess/{accessId} {
+      allow get, list: if signedIn() && (
+        isSuper()
+        || resource.data.userId == request.auth.uid
+        || (isManager() && resource.data.managerId == request.auth.uid)
+      );
+      allow create: if signedIn() && accessId == request.resource.data.companyId + '_' + request.resource.data.userId
+        && manages(request.resource.data.companyId)
+        && request.resource.data.managerId == get(companyPath(request.resource.data.companyId)).data.managerId
+        && exists(/databases/$(database)/documents/users/$(request.resource.data.userId))
+        && get(/databases/$(database)/documents/users/$(request.resource.data.userId)).data.role == 'staff';
+      allow update: if false;
+      allow delete: if signedIn() && manages(resource.data.companyId);
+    }
+  }
+}
